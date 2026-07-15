@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>YouTube Subscriber Counter</title>
+<style>
+  :root {
+    --bg: rgba(16, 16, 22, 0.86);
+    --bg2: rgba(28, 26, 38, 0.80);
+    --text: #f4f4f6;
+    --muted: rgba(244, 244, 246, 0.45);
+    --red: #ff3d3d;
+    --red2: #ff7a45;
+    --radius: 8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { background: #101016; overflow: hidden; }
+  body {
+    font-family: "Segoe UI Variable Display", "Segoe UI", "Yu Gothic UI", sans-serif;
+    color: var(--text);
+    width: 100vw; height: 100vh;
+    display: flex; align-items: stretch;
+  }
+
+  .card {
+    position: relative;
+    flex: 1;
+    display: flex; flex-direction: column; justify-content: center;
+    border-radius: var(--radius);
+    background: linear-gradient(145deg, var(--bg2) 0%, var(--bg) 55%, rgba(12,12,16,0.9) 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+    padding: 16px 20px;
+    overflow: hidden;
+  }
+  /* gradient hairline border */
+  .card::before {
+    content: ""; position: absolute; inset: 0;
+    border-radius: var(--radius); padding: 1px;
+    background: linear-gradient(135deg, rgba(255,61,61,0.55), rgba(255,255,255,0.10) 35%, rgba(255,255,255,0.04) 65%, rgba(255,122,69,0.35));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    pointer-events: none;
+  }
+  /* ambient glow */
+  .card::after {
+    content: ""; position: absolute;
+    width: 220px; height: 220px; left: -70px; top: -120px;
+    background: radial-gradient(circle, rgba(255,61,61,0.22), transparent 65%);
+    pointer-events: none;
+  }
+
+  /* ── header ── */
+  .head { display: flex; align-items: center; gap: 12px; position: relative; z-index: 1; }
+  .avatar {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: #222 center/cover no-repeat;
+    box-shadow: 0 0 0 2px rgba(255,61,61,0.7), 0 0 18px rgba(255,61,61,0.35);
+    flex-shrink: 0;
+  }
+  .avatar, .who { cursor: pointer; }
+  .who:hover .name { color: #fff; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(255,61,61,0.6); }
+  .who { min-width: 0; flex: 1; }
+  .name {
+    font-size: 15px; font-weight: 600; letter-spacing: 0.2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .handle { font-size: 11px; color: var(--muted); }
+  .live {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 9px; font-weight: 700; letter-spacing: 2px; color: var(--muted);
+    transition: opacity .25s;
+  }
+  .card:hover .live { opacity: 0; }
+  .live .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 8px var(--red);
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1);} 50% { opacity: .35; transform: scale(.75);} }
+
+  /* ── counter ── */
+  .label {
+    margin-top: 12px;
+    font-size: 9px; font-weight: 700; letter-spacing: 3.5px; color: var(--muted);
+    position: relative; z-index: 1;
+  }
+  .counter {
+    display: flex; align-items: flex-end; gap: 1px;
+    height: 44px; margin-top: 2px;
+    font-size: 38px; font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    position: relative; z-index: 1;
+    color: #ffffff;
+    text-shadow: 0 0 24px rgba(255,61,61,0.25);
+  }
+  .digit { height: 44px; overflow: hidden; }
+  .digit .reel {
+    display: flex; flex-direction: column;
+    transition: transform 1.1s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .digit .reel span { height: 44px; line-height: 44px; display: block; }
+  .sep { line-height: 44px; opacity: .5; }
+  .delta {
+    align-self: center; margin-left: 10px; margin-bottom: 8px;
+    font-size: 11px; font-weight: 700;
+    padding: 2px 8px; border-radius: 20px;
+    background: rgba(61,220,132,0.14); color: #3ddc84;
+    opacity: 0; transform: translateY(4px);
+    transition: opacity .4s, transform .4s;
+    white-space: nowrap;
+  }
+  .delta.neg { background: rgba(255,90,90,0.14); color: #ff5a5a; }
+  .delta.show { opacity: 1; transform: translateY(0); }
+
+  /* ── footer ── */
+  .foot {
+    display: flex; align-items: center; gap: 14px;
+    margin-top: 8px; font-size: 10.5px; color: var(--muted);
+    position: relative; z-index: 1;
+  }
+  .foot b { color: rgba(244,244,246,0.8); font-weight: 600; }
+  .foot .spacer { flex: 1; }
+  .status { font-size: 10px; }
+  .status.err { color: #ff8080; }
+
+  /* ── hover controls ── */
+  .ctrl {
+    position: absolute; top: 10px; right: 12px; z-index: 3;
+    display: flex; gap: 4px; opacity: 0; transition: opacity .25s;
+  }
+  .card:hover .ctrl { opacity: 1; }
+  .ctrl button {
+    all: unset; cursor: pointer;
+    width: 24px; height: 24px; border-radius: 8px;
+    display: grid; place-items: center;
+    color: var(--muted); font-size: 12px;
+    background: rgba(255,255,255,0.05);
+  }
+  .ctrl button:hover { color: #fff; background: rgba(255,255,255,0.13); }
+  .ctrl button.on { color: var(--red); background: rgba(255,61,61,0.16); }
+  .ctrl button.on:hover { color: var(--red); }
+  .ctrl svg { width: 13px; height: 13px; }
+
+  /* ── setup panel ── */
+  .setup { position: relative; z-index: 2; display: none; }
+  .setup h1 {
+    font-size: 13px; font-weight: 600; margin-bottom: 12px;
+    letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px;
+  }
+  .setup h1 span { color: var(--red); font-size: 11px; }
+  .setup input {
+    all: unset; display: block; width: 100%;
+    box-sizing: border-box;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    padding: 8px 11px; margin-bottom: 8px;
+    font-size: 12px; color: var(--text);
+    user-select: text; -webkit-user-select: text;
+  }
+  .setup input::placeholder { color: rgba(244,244,246,0.3); }
+  .setup input:focus { border-color: rgba(255,61,61,0.6); }
+  .setup .row { display: flex; gap: 8px; align-items: center; }
+  .setup button {
+    all: unset; cursor: pointer; text-align: center;
+    flex: 1; padding: 8px 0; border-radius: 10px;
+    font-size: 12px; font-weight: 700; color: #fff;
+    background: linear-gradient(135deg, var(--red), var(--red2));
+    box-shadow: 0 4px 14px rgba(255,61,61,0.35);
+  }
+  .setup button:hover { filter: brightness(1.1); }
+
+  .hidden { display: none !important; }
+  .setup.active { display: block; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="ctrl">
+      <button id="btnPin" title="最前面に固定">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14.6 2.6a1 1 0 0 1 1.4 0l5.4 5.4a1 1 0 0 1 0 1.4l-1.2 1.2a1 1 0 0 1-1 .25l-.9-.25-3.6 3.6.4 2.6a1 1 0 0 1-.28.87l-1.2 1.2a1 1 0 0 1-1.42 0l-3.3-3.3-4.9 4.9a1 1 0 0 1-1.4-1.4l4.9-4.9-3.3-3.3a1 1 0 0 1 0-1.42l1.2-1.2a1 1 0 0 1 .86-.28l2.6.4 3.6-3.6-.24-.9a1 1 0 0 1 .25-1l1.2-1.2z"/></svg>
+      </button>
+      <button id="btnSettings" title="設定">&#9881;</button>
+      <button id="btnClose" title="閉じる">&#10005;</button>
+    </div>
+
+    <!-- main view -->
+    <div id="main">
+      <div class="head">
+        <div class="avatar" id="avatar"></div>
+        <div class="who">
+          <div class="name" id="chName">読み込み中…</div>
+          <div class="handle" id="chHandle"></div>
+        </div>
+        <div class="live"><span class="dot"></span>LIVE</div>
+      </div>
+      <div class="label">SUBSCRIBERS</div>
+      <div style="display:flex">
+        <div class="counter" id="counter"></div>
+        <div class="delta" id="delta"></div>
+      </div>
+      <div class="foot">
+        <div>再生 <b id="views">–</b></div>
+        <div>動画 <b id="videos">–</b></div>
+        <div class="spacer"></div>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+
+    <!-- setup view -->
+    <div id="setup" class="setup">
+      <h1><span>&#9654;</span> ウィジェット設定</h1>
+      <input id="inKey" placeholder="YouTube Data API キー" spellcheck="false">
+      <input id="inChannel" placeholder="@ハンドル or チャンネルID (UC…)" spellcheck="false">
+      <div class="row">
+        <input id="inInterval" placeholder="更新間隔(秒)" style="flex:0 0 90px; margin-bottom:0" spellcheck="false">
+        <button id="btnSave">保存して開始</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  let timer = null;
+  let lastCount = null;
+  let lastUpdated = null;
+
+  const ERRORS = {
+    not_configured: "未設定",
+    channel_not_found: "チャンネルが見つかりません",
+    keyInvalid: "APIキーが無効です",
+    badRequest: "APIキーが無効です",
+    quotaExceeded: "APIクォータ超過",
+    network: "オフライン",
+  };
+
+  const fmt = n => n.toLocaleString("en-US");
+  const compact = n =>
+    n >= 1e8 ? (n / 1e8).toFixed(1) + "億" :
+    n >= 1e4 ? (n / 1e4).toFixed(1) + "万" : fmt(n);
+
+  /* ── odometer ── */
+  function buildReel() {
+    const d = document.createElement("div");
+    d.className = "digit";
+    const reel = document.createElement("div");
+    reel.className = "reel";
+    for (let i = 0; i <= 9; i++) {
+      const s = document.createElement("span");
+      s.textContent = i;
+      reel.appendChild(s);
+    }
+    d.appendChild(reel);
+    return d;
+  }
+
+  function renderCount(n) {
+    const el = $("counter");
+    const str = fmt(n);
+    const slots = [...el.children];
+    if (slots.length !== str.length || slots.some((s, i) => (s.classList.contains("sep")) !== (str[i] === ","))) {
+      el.innerHTML = "";
+      for (const ch of str) {
+        if (ch === ",") {
+          const s = document.createElement("div");
+          s.className = "sep"; s.textContent = ",";
+          el.appendChild(s);
+        } else {
+          el.appendChild(buildReel());
+        }
+      }
+    }
+    let i = 0;
+    for (const slot of el.children) {
+      const ch = str[i++];
+      if (ch === ",") continue;
+      const reel = slot.firstChild;
+      requestAnimationFrame(() =>
+        reel.style.transform = "translateY(-" + (+ch * 44) + "px)");
+    }
+  }
+
+  function showDelta(diff) {
+    const d = $("delta");
+    d.textContent = (diff > 0 ? "+" : "") + fmt(diff);
+    d.classList.toggle("neg", diff < 0);
+    d.classList.add("show");
+    setTimeout(() => d.classList.remove("show"), 6000);
+  }
+
+  /* ── data ── */
+  async function refresh() {
+    let r;
+    try { r = await pywebview.api.fetch_stats(); }
+    catch (e) { r = { error: "network" }; }
+
+    if (r.error) {
+      if (r.error === "not_configured") return showSetup(true);
+      $("status").textContent = ERRORS[r.error] || "エラー: " + r.error;
+      $("status").className = "status err";
+      return;
+    }
+    $("chName").textContent = r.title;
+    $("chHandle").textContent = r.handle;
+    if (r.thumbnail) $("avatar").style.backgroundImage = "url('" + r.thumbnail + "')";
+    $("views").textContent = compact(r.views);
+    $("videos").textContent = fmt(r.videos);
+
+    if (r.hiddenSubs) {
+      $("status").textContent = "登録者数は非公開です";
+      $("status").className = "status err";
+      return;
+    }
+    renderCount(r.subscribers);
+    if (lastCount !== null && r.subscribers !== lastCount) showDelta(r.subscribers - lastCount);
+    lastCount = r.subscribers;
+    lastUpdated = Date.now();
+    $("status").className = "status";
+    tickAgo();
+  }
+
+  function tickAgo() {
+    if (!lastUpdated) return;
+    const s = Math.round((Date.now() - lastUpdated) / 1000);
+    $("status").textContent = s < 5 ? "更新しました" : s + "秒前に更新";
+  }
+  setInterval(tickAgo, 5000);
+
+  function startPolling(intervalSec) {
+    clearInterval(timer);
+    refresh();
+    timer = setInterval(refresh, Math.max(15, intervalSec) * 1000);
+  }
+
+  /* ── setup ── */
+  function showSetup(on) {
+    $("setup").classList.toggle("active", on);
+    $("main").classList.toggle("hidden", on);
+  }
+
+  async function openSettings() {
+    const cfg = await pywebview.api.get_config();
+    $("inKey").value = cfg.apiKey || "";
+    $("inChannel").value = cfg.channel || "";
+    $("inInterval").value = cfg.intervalSec || 30;
+    showSetup(true);
+  }
+
+  $("btnSave").addEventListener("click", async () => {
+    const cfg = await pywebview.api.save_settings(
+      $("inKey").value, $("inChannel").value, $("inInterval").value);
+    showSetup(false);
+    lastCount = null;
+    startPolling(cfg.intervalSec);
+  });
+
+  const openChannel = () => pywebview.api.open_channel();
+  $("avatar").addEventListener("click", openChannel);
+  document.querySelector(".who").addEventListener("click", openChannel);
+
+  $("btnSettings").addEventListener("click", openSettings);
+  $("btnClose").addEventListener("click", () => pywebview.api.close_app());
+
+  /* ── always-on-top pin ── */
+  let onTop = true;
+  function setPinUI(v) {
+    $("btnPin").classList.toggle("on", v);
+    $("btnPin").title = v ? "最前面固定中(クリックで解除)" : "最前面に固定";
+  }
+  $("btnPin").addEventListener("click", async () => {
+    const cfg = await pywebview.api.set_on_top(!onTop);
+    onTop = !!cfg.alwaysOnTop;
+    setPinUI(onTop);
+  });
+
+  window.addEventListener("pywebviewready", async () => {
+    const cfg = await pywebview.api.get_config();
+    onTop = cfg.alwaysOnTop !== false;
+    setPinUI(onTop);
+    if (!cfg.apiKey || !cfg.channel) { openSettings(); return; }
+    startPolling(cfg.intervalSec);
+  });
+})();
+</script>
+</body>
+</html>

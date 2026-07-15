@@ -1,0 +1,11 @@
+# API key & personal settings — never commit
+config.json
+
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller
+build/
+dist/
+*.spec
