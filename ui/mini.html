@@ -38,7 +38,11 @@
   <div class="wrap"><div class="yt"></div><span id="c">–</span></div>
 <script>
   function setCount(t) { document.getElementById("c").textContent = t; }
-  document.body.addEventListener("click", () => {
+  // easy_drag moves the window; treat it as a click only if the mouse barely moved
+  let downX = 0, downY = 0;
+  window.addEventListener("mousedown", e => { downX = e.screenX; downY = e.screenY; });
+  document.body.addEventListener("click", e => {
+    if (Math.abs(e.screenX - downX) + Math.abs(e.screenY - downY) > 6) return;
     if (window.pywebview) pywebview.api.toggle_main();
   });
 </script>

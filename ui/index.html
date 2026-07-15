@@ -41,20 +41,13 @@
     -webkit-mask-composite: xor; mask-composite: exclude;
     pointer-events: none;
   }
-  /* ambient glow */
-  .card::after {
-    content: ""; position: absolute;
-    width: 220px; height: 220px; left: -70px; top: -120px;
-    background: radial-gradient(circle, rgba(255,61,61,0.22), transparent 65%);
-    pointer-events: none;
-  }
 
   /* ── header ── */
   .head { display: flex; align-items: center; gap: 12px; position: relative; z-index: 1; }
   .avatar {
     width: 38px; height: 38px; border-radius: 50%;
     background: #222 center/cover no-repeat;
-    box-shadow: 0 0 0 2px rgba(255,61,61,0.7), 0 0 18px rgba(255,61,61,0.35);
+    box-shadow: 0 0 0 2px rgba(255,61,61,0.7);
     flex-shrink: 0;
   }
   .avatar, .who { cursor: pointer; }

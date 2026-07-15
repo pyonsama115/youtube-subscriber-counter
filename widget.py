@@ -10,25 +10,46 @@ import webbrowser
 
 import webview
 
-def apply_window_state(window, on_top):
-    """Set TopMost and taskbar-button visibility on the WinForms UI thread."""
+def round_corners(window):
+    """Ask DWM to round + antialias the window corners (Windows 11)."""
+    try:
+        hwnd = window.native.Handle.ToInt32()
+        pref = ctypes.c_int(2)  # DWMWCP_ROUND
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
+    except Exception:
+        pass
+
+
+def _on_ui_thread(window, fn):
+    """Run fn on the WinForms UI thread; never let an exception escape into .NET."""
+    def safe():
+        try:
+            fn()
+        except Exception:
+            pass
     try:
         from System import Action
         form = window.native
-
-        def apply():
-            try:
-                form.TopMost = bool(on_top)
-                form.ShowInTaskbar = not bool(on_top)
-            except Exception:
-                pass
-
         if form.InvokeRequired:
-            form.BeginInvoke(Action(apply))
+            form.BeginInvoke(Action(safe))
         else:
-            apply()
+            safe()
     except Exception:
         pass
+
+
+def apply_window_state(window, on_top):
+    """Set TopMost on the WinForms UI thread."""
+    _on_ui_thread(window, lambda: setattr(window.native, "TopMost", bool(on_top)))
+
+
+def hide_taskbar_button(window):
+    """Permanently hide the app's taskbar button (the mini pill is the restore UI).
+
+    Must run after WebView2 finishes initializing: ShowInTaskbar recreates the
+    window handle, which aborts an in-flight WebView2 init.
+    """
+    _on_ui_thread(window, lambda: setattr(window.native, "ShowInTaskbar", False))
 
 # When frozen by PyInstaller, config lives next to the exe and the UI is
 # unpacked to the temporary _MEIPASS resource directory.
@@ -89,6 +110,8 @@ DEFAULT_CONFIG = {
     "alwaysOnTop": True,
     "x": None,
     "y": None,
+    "miniX": None,
+    "miniY": None,
 }
 
 
@@ -118,145 +141,12 @@ def tray_label(n):
     return str(n)
 
 
-class Tray:
-    """Taskbar notification-area icon that displays the live subscriber count."""
-
-    def __init__(self, window):
-        self.window = window
-        self._tray = None
-        self._hicon = None
-
-    def _ui(self, fn, wait=False):
-        """Run fn on the WinForms UI thread; never let an exception escape into .NET."""
-        def safe():
-            try:
-                fn()
-            except Exception:
-                pass
-        try:
-            from System import Action
-            form = self.window.native
-            if form.InvokeRequired:
-                if wait:
-                    form.Invoke(Action(safe))
-                else:
-                    form.BeginInvoke(Action(safe))
-            else:
-                safe()
-        except Exception:
-            pass
-
-    def start(self):
-        self._ui(self._build, wait=True)
-
-    def _build(self):
-        import System.Windows.Forms as WinForms
-
-        self._tray = WinForms.NotifyIcon()
-        menu = WinForms.ContextMenuStrip()
-        mi_toggle = WinForms.ToolStripMenuItem("ウィジェットを表示 / 非表示")
-        mi_toggle.Click += lambda s, e: self._ui(self._toggle)
-        mi_exit = WinForms.ToolStripMenuItem("終了")
-        mi_exit.Click += lambda s, e: self._ui(self._exit)
-        menu.Items.Add(mi_toggle)
-        menu.Items.Add(mi_exit)
-        self._tray.ContextMenuStrip = menu
-        self._tray.Text = "YouTube Subscriber Counter"
-        self._tray.MouseUp += self._on_mouse
-        self._set_icon("···")
-        self._tray.Visible = True
-
-    def _on_mouse(self, sender, e):
-        try:
-            import System.Windows.Forms as WinForms
-            if e.Button == WinForms.MouseButtons.Left:
-                self._ui(self._toggle)
-        except Exception:
-            pass
-
-    def _toggle(self):
-        form = self.window.native
-        if form.Visible:
-            form.Hide()
-        else:
-            form.Show()
-
-    def _exit(self):
-        self.dispose()
-        for w in list(webview.windows):
-            try:
-                w.destroy()
-            except Exception:
-                pass
-
-    def _set_icon(self, text):
-        from System.Drawing import (Brushes, Bitmap, Color, Font, FontStyle,
-                                    Graphics, GraphicsUnit, Icon, RectangleF,
-                                    SolidBrush, StringAlignment, StringFormat)
-        from System.Drawing.Drawing2D import GraphicsPath, SmoothingMode
-        from System.Drawing.Text import TextRenderingHint
-
-        bmp = Bitmap(32, 32)
-        g = Graphics.FromImage(bmp)
-        g.Clear(Color.Transparent)
-        g.SmoothingMode = SmoothingMode.AntiAlias
-        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit
-
-        # YouTube-red rounded badge so the number reads on light and dark taskbars
-        path = GraphicsPath()
-        r, w = 10, 32
-        path.AddArc(0, 0, r * 2, r * 2, 180, 90)
-        path.AddArc(w - r * 2, 0, r * 2, r * 2, 270, 90)
-        path.AddArc(w - r * 2, w - r * 2, r * 2, r * 2, 0, 90)
-        path.AddArc(0, w - r * 2, r * 2, r * 2, 90, 90)
-        path.CloseFigure()
-        g.FillPath(SolidBrush(Color.FromArgb(255, 230, 33, 23)), path)
-
-        sizes = {1: 22.0, 2: 19.0, 3: 14.0, 4: 11.0}
-        font = Font("Segoe UI", sizes.get(len(text), 9.5), FontStyle.Bold, GraphicsUnit.Pixel)
-        fmt = StringFormat()
-        fmt.Alignment = StringAlignment.Center
-        fmt.LineAlignment = StringAlignment.Center
-        g.DrawString(text, font, Brushes.White, RectangleF(0, 1, 32, 30), fmt)
-        g.Dispose()
-
-        hicon = bmp.GetHicon()
-        self._tray.Icon = Icon.FromHandle(hicon)
-        if self._hicon:
-            ctypes.windll.user32.DestroyIcon(self._hicon)
-        self._hicon = hicon
-        bmp.Dispose()
-
-    def update(self, subscribers, title):
-        if not self._tray:
-            return
-        label = tray_label(subscribers)
-        tip = ("%s\n登録者 %s人" % (title, format(subscribers, ",")))[:63]
-
-        def apply():
-            if not self._tray:
-                return
-            self._set_icon(label)
-            self._tray.Text = tip
-
-        self._ui(apply)
-
-    def dispose(self):
-        def do_dispose():
-            tray, self._tray = self._tray, None
-            if tray:
-                tray.Visible = False
-                tray.Dispose()
-        self._ui(do_dispose, wait=True)
-
-
 class Api:
     def __init__(self):
         self._resolved_id = None
         self._resolved_for = None
         self._channel_url = None
         self._window = None
-        self._tray = None
         self._mini = None
 
     def toggle_main(self):
@@ -298,6 +188,15 @@ class Api:
         save_config(cfg)
         if self._window:
             apply_window_state(self._window, on_top)
+        # the taskbar pill is only useful when the card is not pinned on top
+        if self._mini:
+            try:
+                if on_top:
+                    self._mini.hide()
+                else:
+                    self._mini.show()
+            except Exception:
+                pass
         return cfg
 
     def get_config(self):
@@ -316,10 +215,11 @@ class Api:
         return cfg
 
     def close_app(self):
-        if self._tray:
-            self._tray.dispose()
-        for w in webview.windows:
-            w.destroy()
+        for w in list(webview.windows):
+            try:
+                w.destroy()
+            except Exception:
+                pass
 
     def _request(self, params):
         url = "https://www.googleapis.com/youtube/v3/channels?" + urllib.parse.urlencode(params)
@@ -358,8 +258,6 @@ class Api:
 
         item = items[0]
         subs = int(item["statistics"].get("subscriberCount", 0))
-        if self._tray:
-            self._tray.update(subs, item["snippet"].get("title", ""))
         if self._mini:
             try:
                 self._mini.evaluate_js('setCount("%s")' % tray_label(subs))
@@ -413,15 +311,19 @@ def main():
     def remember_position():
         c = load_config()
         c["x"], c["y"] = window.x, window.y
+        if api._mini:
+            try:
+                c["miniX"], c["miniY"] = api._mini.x, api._mini.y
+            except Exception:
+                pass
         save_config(c)
 
-    tray = Tray(window)
-    api._tray = tray
-
-    # taskbar mini widget (weather-widget style pill, left of the tray clock)
+    # taskbar mini widget (weather-widget style pill, drag to move freely)
     slot = taskbar_slot(88)
     if slot:
         mx, my, mw, mh = slot
+        if isinstance(cfg.get("miniX"), int) and isinstance(cfg.get("miniY"), int):
+            mx, my = cfg["miniX"], cfg["miniY"]
         mini = webview.create_window(
             "YT Sub Mini",
             MINI_UI_PATH,
@@ -435,20 +337,30 @@ def main():
             on_top=True,
             resizable=False,
             focus=False,
-            easy_drag=False,
+            easy_drag=True,
             background_color="#16161d",
         )
         api._mini = mini
 
+        def mini_loaded():
+            round_corners(mini)
+            if load_config().get("alwaysOnTop", True):
+                try:
+                    mini.hide()
+                except Exception:
+                    pass
+
+        mini.events.loaded += mini_loaded
+
     def on_shown():
         apply_window_state(window, load_config().get("alwaysOnTop", True))
-        tray.start()
+        round_corners(window)
 
-    def on_closing():
-        remember_position()
-        tray.dispose()
+    def on_loaded():
+        hide_taskbar_button(window)
 
-    window.events.closing += on_closing
+    window.events.loaded += on_loaded
+    window.events.closing += remember_position
     window.events.shown += on_shown
     webview.start()
 
