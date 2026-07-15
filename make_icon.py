@@ -10,9 +10,15 @@ def draw_icon(size=BASE):
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    # rounded square, vertical red gradient
+    # dark charcoal border frame
     pad = int(s * 0.04)
     radius = int(s * 0.24)
+    border = int(s * 0.11)
+    d.rounded_rectangle([pad, pad, s - pad, s - pad], radius=radius, fill=(22, 22, 29, 255))
+
+    # inner rounded square, vertical red gradient
+    ipad = pad + border
+    iradius = max(1, radius - border)
     top, bottom = (255, 61, 61), (218, 24, 24)
     grad = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     gd = ImageDraw.Draw(grad)
@@ -22,7 +28,7 @@ def draw_icon(size=BASE):
         gd.line([(0, y), (s, y)], fill=c + (255,))
     mask = Image.new("L", (s, s), 0)
     md = ImageDraw.Draw(mask)
-    md.rounded_rectangle([pad, pad, s - pad, s - pad], radius=radius, fill=255)
+    md.rounded_rectangle([ipad, ipad, s - ipad, s - ipad], radius=iradius, fill=255)
     img.paste(grad, (0, 0), mask)
 
     # white play triangle, optically centered
