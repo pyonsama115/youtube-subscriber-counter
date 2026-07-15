@@ -9,3 +9,6 @@ __pycache__/
 build/
 dist/
 *.spec
+
+# Claude Code local files
+.claude/
