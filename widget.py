@@ -2,6 +2,7 @@
 import ctypes
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -63,6 +64,12 @@ RES_DIR = getattr(sys, "_MEIPASS", APP_DIR)
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 UI_PATH = os.path.join(RES_DIR, "ui", "index.html")
 MINI_UI_PATH = os.path.join(RES_DIR, "ui", "mini.html")
+STARTUP_LNK = os.path.join(
+    os.environ.get("APPDATA", ""),
+    r"Microsoft\Windows\Start Menu\Programs\Startup",
+    "YouTube Counter.lnk",
+)
+WINDOW_W, WINDOW_H, SETUP_H = 320, 165, 215
 
 
 class _RECT(ctypes.Structure):
@@ -205,6 +212,41 @@ class Api:
 
     def get_config(self):
         return load_config()
+
+    def resize_window(self, height):
+        try:
+            if self._window:
+                self._window.resize(WINDOW_W, int(height))
+        except Exception:
+            pass
+
+    def get_autostart(self):
+        return os.path.exists(STARTUP_LNK)
+
+    def set_autostart(self, enabled):
+        try:
+            if enabled:
+                if FROZEN:
+                    target = sys.executable
+                else:
+                    target = os.path.join(APP_DIR, "YouTube Counter.vbs")
+                script = (
+                    "$ws = New-Object -ComObject WScript.Shell;"
+                    "$s = $ws.CreateShortcut('%s');"
+                    "$s.TargetPath = '%s';"
+                    "$s.WorkingDirectory = '%s';"
+                    "$s.Save()" % (STARTUP_LNK, target, APP_DIR)
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", script],
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                    timeout=20,
+                )
+            elif os.path.exists(STARTUP_LNK):
+                os.remove(STARTUP_LNK)
+        except Exception:
+            pass
+        return self.get_autostart()
 
     def save_settings(self, api_key, channel, interval_sec):
         cfg = load_config()

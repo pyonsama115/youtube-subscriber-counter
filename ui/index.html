@@ -148,13 +148,23 @@
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.10);
     border-radius: 10px;
-    padding: 6px 10px; margin-bottom: 7px;
+    padding: 7px 10px; margin-bottom: 8px;
     font-size: 12px; color: var(--text);
     user-select: text; -webkit-user-select: text;
   }
   .setup input::placeholder { color: rgba(244,244,246,0.3); }
   .setup input:focus { border-color: rgba(255,61,61,0.6); }
   .setup .row { display: flex; gap: 8px; align-items: center; }
+  .setup .chk {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11.5px; color: var(--muted);
+    margin: 2px 0 10px; cursor: pointer;
+  }
+  .setup .chk:hover { color: var(--text); }
+  .setup .chk input {
+    all: revert; accent-color: var(--red);
+    width: 14px; height: 14px; margin: 0; cursor: pointer;
+  }
   .setup button {
     all: unset; cursor: pointer; text-align: center;
     flex: 1; padding: 8px 0; border-radius: 10px;
@@ -206,6 +216,7 @@
       <h1><span>&#9654;</span> ウィジェット設定</h1>
       <input id="inKey" placeholder="YouTube Data API キー" spellcheck="false">
       <input id="inChannel" placeholder="@ハンドル or チャンネルID (UC…)" spellcheck="false">
+      <label class="chk"><input type="checkbox" id="inAuto"> PC起動時に自動起動</label>
       <div class="row">
         <input id="inInterval" placeholder="更新間隔(秒)" style="flex:0 0 90px; margin-bottom:0" spellcheck="false">
         <button id="btnSave">保存して開始</button>
@@ -331,6 +342,8 @@
   function showSetup(on) {
     $("setup").classList.toggle("active", on);
     $("main").classList.toggle("hidden", on);
+    // the setup form needs more vertical room than the counter card
+    try { pywebview.api.resize_window(on ? 215 : 165); } catch (e) {}
   }
 
   async function openSettings() {
@@ -338,12 +351,14 @@
     $("inKey").value = cfg.apiKey || "";
     $("inChannel").value = cfg.channel || "";
     $("inInterval").value = cfg.intervalSec || 30;
+    $("inAuto").checked = await pywebview.api.get_autostart();
     showSetup(true);
   }
 
   $("btnSave").addEventListener("click", async () => {
     const cfg = await pywebview.api.save_settings(
       $("inKey").value, $("inChannel").value, $("inInterval").value);
+    await pywebview.api.set_autostart($("inAuto").checked);
     showSetup(false);
     lastCount = null;
     startPolling(cfg.intervalSec);
