@@ -10,28 +10,25 @@ import webbrowser
 
 import webview
 
-GWL_EXSTYLE = -20
-WS_EX_TOOLWINDOW = 0x00000080
-WS_EX_APPWINDOW = 0x00040000
-SW_HIDE = 0
-SW_SHOWNOACTIVATE = 4
-
-
-def apply_taskbar_visibility(window, show):
-    """Show or hide the window's taskbar button (WS_EX_TOOLWINDOW trick)."""
+def apply_window_state(window, on_top):
+    """Set TopMost and taskbar-button visibility on the WinForms UI thread."""
     try:
-        hwnd = window.native.Handle.ToInt32()
+        from System import Action
+        form = window.native
+
+        def apply():
+            try:
+                form.TopMost = bool(on_top)
+                form.ShowInTaskbar = not bool(on_top)
+            except Exception:
+                pass
+
+        if form.InvokeRequired:
+            form.BeginInvoke(Action(apply))
+        else:
+            apply()
     except Exception:
-        return
-    u = ctypes.windll.user32
-    style = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    if show:
-        style = (style | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW
-    else:
-        style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
-    u.ShowWindow(hwnd, SW_HIDE)
-    u.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-    u.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        pass
 
 # When frozen by PyInstaller, config lives next to the exe and the UI is
 # unpacked to the temporary _MEIPASS resource directory.
@@ -40,6 +37,50 @@ APP_DIR = os.path.dirname(sys.executable) if FROZEN else os.path.dirname(os.path
 RES_DIR = getattr(sys, "_MEIPASS", APP_DIR)
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 UI_PATH = os.path.join(RES_DIR, "ui", "index.html")
+MINI_UI_PATH = os.path.join(RES_DIR, "ui", "mini.html")
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+
+def taskbar_slot(mini_w_logical):
+    """Compute logical (x, y, w, h) for a mini window docked left of the tray clock.
+
+    pywebview treats x/y/width/height as logical pixels and multiplies them by
+    the DPI scale itself, so everything returned here is logical. Returns None
+    if there is no horizontal taskbar to dock onto.
+    """
+    u = ctypes.windll.user32
+    try:
+        u.SetProcessDPIAware()
+        tray = u.FindWindowW("Shell_TrayWnd", None)
+        if not tray:
+            return None
+        r = _RECT()
+        u.GetWindowRect(tray, ctypes.byref(r))
+        tb_h = r.b - r.t
+        if tb_h <= 0 or tb_h >= (r.r - r.l):  # vertical taskbar — skip
+            return None
+        try:
+            dpi = u.GetDpiForSystem()
+        except AttributeError:
+            dpi = 96
+        scale = (dpi or 96) / 96
+        right_edge = r.r
+        notify = u.FindWindowExW(tray, 0, "TrayNotifyWnd", None)
+        if notify:
+            nr = _RECT()
+            u.GetWindowRect(notify, ctypes.byref(nr))
+            if nr.l > r.l:
+                right_edge = nr.l
+        h_logical = max(28, int(tb_h / scale) - 12)
+        x_logical = int(right_edge / scale) - mini_w_logical - 8
+        y_logical = int((r.t + tb_h / 2) / scale - h_logical / 2)
+        return x_logical, y_logical, mini_w_logical, h_logical
+    except Exception:
+        return None
 
 DEFAULT_CONFIG = {
     "apiKey": "",
@@ -85,12 +126,28 @@ class Tray:
         self._tray = None
         self._hicon = None
 
-    def start(self):
+    def _ui(self, fn, wait=False):
+        """Run fn on the WinForms UI thread; never let an exception escape into .NET."""
+        def safe():
+            try:
+                fn()
+            except Exception:
+                pass
         try:
             from System import Action
-            self.window.native.Invoke(Action(self._build))
+            form = self.window.native
+            if form.InvokeRequired:
+                if wait:
+                    form.Invoke(Action(safe))
+                else:
+                    form.BeginInvoke(Action(safe))
+            else:
+                safe()
         except Exception:
             pass
+
+    def start(self):
+        self._ui(self._build, wait=True)
 
     def _build(self):
         import System.Windows.Forms as WinForms
@@ -98,9 +155,9 @@ class Tray:
         self._tray = WinForms.NotifyIcon()
         menu = WinForms.ContextMenuStrip()
         mi_toggle = WinForms.ToolStripMenuItem("ウィジェットを表示 / 非表示")
-        mi_toggle.Click += lambda s, e: self._toggle()
+        mi_toggle.Click += lambda s, e: self._ui(self._toggle)
         mi_exit = WinForms.ToolStripMenuItem("終了")
-        mi_exit.Click += lambda s, e: self._exit()
+        mi_exit.Click += lambda s, e: self._ui(self._exit)
         menu.Items.Add(mi_toggle)
         menu.Items.Add(mi_exit)
         self._tray.ContextMenuStrip = menu
@@ -110,9 +167,12 @@ class Tray:
         self._tray.Visible = True
 
     def _on_mouse(self, sender, e):
-        import System.Windows.Forms as WinForms
-        if e.Button == WinForms.MouseButtons.Left:
-            self._toggle()
+        try:
+            import System.Windows.Forms as WinForms
+            if e.Button == WinForms.MouseButtons.Left:
+                self._ui(self._toggle)
+        except Exception:
+            pass
 
     def _toggle(self):
         form = self.window.native
@@ -123,7 +183,11 @@ class Tray:
 
     def _exit(self):
         self.dispose()
-        self.window.destroy()
+        for w in list(webview.windows):
+            try:
+                w.destroy()
+            except Exception:
+                pass
 
     def _set_icon(self, text):
         from System.Drawing import (Brushes, Bitmap, Color, Font, FontStyle,
@@ -166,27 +230,24 @@ class Tray:
     def update(self, subscribers, title):
         if not self._tray:
             return
-        try:
-            from System import Action
-            label = tray_label(subscribers)
-            tip = ("%s\n登録者 %s人" % (title, format(subscribers, ",")))[:63]
+        label = tray_label(subscribers)
+        tip = ("%s\n登録者 %s人" % (title, format(subscribers, ",")))[:63]
 
-            def apply():
-                self._set_icon(label)
-                self._tray.Text = tip
+        def apply():
+            if not self._tray:
+                return
+            self._set_icon(label)
+            self._tray.Text = tip
 
-            self.window.native.BeginInvoke(Action(apply))
-        except Exception:
-            pass
+        self._ui(apply)
 
     def dispose(self):
-        try:
-            if self._tray:
-                self._tray.Visible = False
-                self._tray.Dispose()
-                self._tray = None
-        except Exception:
-            pass
+        def do_dispose():
+            tray, self._tray = self._tray, None
+            if tray:
+                tray.Visible = False
+                tray.Dispose()
+        self._ui(do_dispose, wait=True)
 
 
 class Api:
@@ -196,6 +257,27 @@ class Api:
         self._channel_url = None
         self._window = None
         self._tray = None
+        self._mini = None
+
+    def toggle_main(self):
+        if not self._window:
+            return
+        try:
+            from System import Action
+            form = self._window.native
+
+            def toggle():
+                try:
+                    if form.Visible:
+                        form.Hide()
+                    else:
+                        form.Show()
+                except Exception:
+                    pass
+
+            form.BeginInvoke(Action(toggle))
+        except Exception:
+            pass
 
     def open_channel(self):
         url = self._channel_url
@@ -215,8 +297,7 @@ class Api:
         cfg["alwaysOnTop"] = on_top
         save_config(cfg)
         if self._window:
-            self._window.on_top = on_top
-            apply_taskbar_visibility(self._window, show=not on_top)
+            apply_window_state(self._window, on_top)
         return cfg
 
     def get_config(self):
@@ -276,11 +357,14 @@ class Api:
             return {"error": "channel_not_found"}
 
         item = items[0]
+        subs = int(item["statistics"].get("subscriberCount", 0))
         if self._tray:
-            self._tray.update(
-                int(item["statistics"].get("subscriberCount", 0)),
-                item["snippet"].get("title", ""),
-            )
+            self._tray.update(subs, item["snippet"].get("title", ""))
+        if self._mini:
+            try:
+                self._mini.evaluate_js('setCount("%s")' % tray_label(subs))
+            except Exception:
+                pass
         self._resolved_id = item["id"]
         self._resolved_for = channel
         snip, stats = item["snippet"], item["statistics"]
@@ -314,8 +398,8 @@ def main():
         "YouTube Subscriber Counter",
         UI_PATH,
         js_api=api,
-        width=360,
-        height=195,
+        width=320,
+        height=165,
         frameless=True,
         easy_drag=True,
         on_top=cfg.get("alwaysOnTop", True),
@@ -334,8 +418,30 @@ def main():
     tray = Tray(window)
     api._tray = tray
 
+    # taskbar mini widget (weather-widget style pill, left of the tray clock)
+    slot = taskbar_slot(88)
+    if slot:
+        mx, my, mw, mh = slot
+        mini = webview.create_window(
+            "YT Sub Mini",
+            MINI_UI_PATH,
+            js_api=api,
+            width=mw,
+            height=mh,
+            x=mx,
+            y=my,
+            min_size=(mw, mh),
+            frameless=True,
+            on_top=True,
+            resizable=False,
+            focus=False,
+            easy_drag=False,
+            background_color="#16161d",
+        )
+        api._mini = mini
+
     def on_shown():
-        apply_taskbar_visibility(window, show=not load_config().get("alwaysOnTop", True))
+        apply_window_state(window, load_config().get("alwaysOnTop", True))
         tray.start()
 
     def on_closing():
