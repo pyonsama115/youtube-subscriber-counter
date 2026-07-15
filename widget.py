@@ -11,13 +11,17 @@ import webbrowser
 import webview
 
 def round_corners(window):
-    """Ask DWM to round + antialias the window corners (Windows 11)."""
-    try:
+    """Ask DWM to round + antialias the window corners (Windows 11).
+
+    Runs on the UI thread so it reads the CURRENT window handle — ShowInTaskbar
+    recreates the handle and drops the corner preference, so this must be
+    (re-)applied after any queued handle recreation.
+    """
+    def apply():
         hwnd = window.native.Handle.ToInt32()
         pref = ctypes.c_int(2)  # DWMWCP_ROUND
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
-    except Exception:
-        pass
+    _on_ui_thread(window, apply)
 
 
 def _on_ui_thread(window, fn):
@@ -358,6 +362,7 @@ def main():
 
     def on_loaded():
         hide_taskbar_button(window)
+        round_corners(window)  # re-apply: ShowInTaskbar recreated the handle
 
     window.events.loaded += on_loaded
     window.events.closing += remember_position
