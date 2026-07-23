@@ -340,22 +340,34 @@ def dock_mini_left_of_start(window):
             ctypes.byref(mini_rect),
         )
 
-        width = mini_rect.r - mini_rect.l
-        height = mini_rect.b - mini_rect.t
-        x = start_rect.l - width - 8
-        y = taskbar_rect.t + ((taskbar_rect.b - taskbar_rect.t) - height) // 2
-
         set_window_pos = u.SetWindowPos
         set_window_pos.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
             ctypes.c_uint,
         ]
-        set_window_pos(
-            ctypes.c_void_p(window.native.Handle.ToInt64()),
-            ctypes.c_void_p(-1), x, y, 0, 0,
-            0x0001 | 0x0010,  # NOSIZE | NOACTIVATE
-        )
+        hwnd = ctypes.c_void_p(window.native.Handle.ToInt64())
+
+        # WinForms and Explorer can expose different DPI coordinate spaces.
+        # Re-measure the actual landing position and converge on a safe gap
+        # gap instead of trusting a single converted x/y calculation.
+        for _ in range(5):
+            u.GetWindowRect(start, ctypes.byref(start_rect))
+            u.GetWindowRect(tray, ctypes.byref(taskbar_rect))
+            u.GetWindowRect(hwnd, ctypes.byref(mini_rect))
+
+            current_gap = start_rect.l - mini_rect.r
+            mini_center = (mini_rect.t + mini_rect.b) // 2
+            taskbar_center = (taskbar_rect.t + taskbar_rect.b) // 2
+            x = mini_rect.l + current_gap - 20
+            y = mini_rect.t + taskbar_center - mini_center
+
+            if abs(current_gap - 20) <= 1 and abs(taskbar_center - mini_center) <= 1:
+                break
+            set_window_pos(
+                hwnd, ctypes.c_void_p(-1), x, y, 0, 0,
+                0x0001 | 0x0010,  # NOSIZE | NOACTIVATE
+            )
 
     _on_ui_thread(window, apply)
 
