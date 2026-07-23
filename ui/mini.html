@@ -87,7 +87,7 @@
   window.addEventListener("mousedown", e => { downX = e.screenX; downY = e.screenY; });
   document.body.addEventListener("contextmenu", e => {
     e.preventDefault();
-    if (window.pywebview) pywebview.api.close_app();
+    if (window.pywebview) pywebview.api.show_mini_menu();
   });
   document.body.addEventListener("click", e => {
     if (Math.abs(e.screenX - downX) + Math.abs(e.screenY - downY) > 6) return;

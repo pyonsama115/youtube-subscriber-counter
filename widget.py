@@ -20,6 +20,7 @@ _MOUSE_DRAG_HOOKS = []
 _DRAG_TIMERS = []
 _CLOSE_HANDLERS = []
 _TRAY_RESOURCES = []
+_MINI_MENU_RESOURCES = []
 _ACCENT_CACHE = {}
 _INSTANCE_MUTEX = None
 
@@ -215,6 +216,27 @@ def install_notification_icon(window, api):
         _TRAY_RESOURCES.append(
             (notify, menu, icon, show_item, exit_item, show_handler, exit_handler)
         )
+
+    _on_ui_thread(window, install)
+
+
+def install_mini_context_menu(window, api):
+    """Create the native right-click menu shown from the mini window."""
+    def install():
+        from System import EventHandler
+        from System.Windows.Forms import ContextMenuStrip, ToolStripMenuItem
+
+        menu = ContextMenuStrip()
+        exit_item = ToolStripMenuItem("終了")
+        menu.Items.Add(exit_item)
+
+        def exit_app(sender=None, event=None):
+            api.close_app()
+
+        exit_handler = EventHandler(exit_app)
+        exit_item.Click += exit_handler
+        api._mini_menu = menu
+        _MINI_MENU_RESOURCES.append((menu, exit_item, exit_handler))
 
     _on_ui_thread(window, install)
 
@@ -504,6 +526,13 @@ def cleanup_native_integrations(*args):
         except Exception:
             pass
     _TRAY_RESOURCES.clear()
+    for menu, exit_item, exit_handler in list(_MINI_MENU_RESOURCES):
+        try:
+            menu.Close()
+            menu.Dispose()
+        except Exception:
+            pass
+    _MINI_MENU_RESOURCES.clear()
 
     for item in list(_DRAG_TIMERS) + list(_KEEPALIVE_TIMERS):
         timer = item[0] if isinstance(item, tuple) else item
@@ -778,6 +807,7 @@ class Api:
         self._main_drag_expanded = True
         self._settings_open = False
         self._closing_all = False
+        self._mini_menu = None
 
     def toggle_main(self):
         if not self._window:
@@ -827,6 +857,17 @@ class Api:
     def set_drag_expanded(self, expanded):
         self._main_drag_expanded = bool(expanded)
         self._settings_open = not bool(expanded)
+
+    def show_mini_menu(self):
+        if not self._mini or not self._mini_menu:
+            return
+        def show():
+            try:
+                from System.Windows.Forms import Cursor
+                self._mini_menu.Show(Cursor.Position)
+            except Exception:
+                pass
+        _on_ui_thread(self._mini, show)
 
     def set_on_top(self, on_top):
         on_top = bool(on_top)
@@ -1059,6 +1100,7 @@ def main():
         def mini_loaded():
             hide_taskbar_button(mini)
             install_unified_close_handler(mini, api)
+            install_mini_context_menu(mini, api)
             detach_noactivate_handler(mini)
             dock_mini_left_of_start(mini)
             round_small_corners(mini)
