@@ -85,6 +85,10 @@
   // easy_drag moves the window; treat it as a click only if the mouse barely moved
   let downX = 0, downY = 0;
   window.addEventListener("mousedown", e => { downX = e.screenX; downY = e.screenY; });
+  document.body.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    if (window.pywebview) pywebview.api.close_app();
+  });
   document.body.addEventListener("click", e => {
     if (Math.abs(e.screenX - downX) + Math.abs(e.screenY - downY) > 6) return;
     if (window.pywebview) pywebview.api.toggle_main();
