@@ -966,6 +966,8 @@ def main():
         api._mini = mini
 
         def mini_loaded():
+            hide_taskbar_button(mini)
+            install_unified_close_handler(mini, api)
             detach_noactivate_handler(mini)
             dock_mini_left_of_start(mini)
             round_small_corners(mini)
