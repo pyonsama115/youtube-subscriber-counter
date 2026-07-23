@@ -20,6 +20,34 @@ _MOUSE_DRAG_HOOKS = []
 _DRAG_TIMERS = []
 _CLOSE_HANDLERS = []
 _ACCENT_CACHE = {}
+_INSTANCE_MUTEX = None
+
+
+def acquire_single_instance():
+    """Allow one running app instance and foreground it on repeated launch."""
+    global _INSTANCE_MUTEX
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [
+        ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p
+    ]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    mutex = kernel32.CreateMutexW(
+        None, False, r"Local\YouTubeSubscriberCounter_8D56C8B1"
+    )
+    if not mutex:
+        return True
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        ctypes.windll.user32.AllowSetForegroundWindow(-1)
+        hwnd = ctypes.windll.user32.FindWindowW(
+            None, "YouTube Subscriber Counter"
+        )
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        kernel32.CloseHandle(mutex)
+        return False
+    _INSTANCE_MUTEX = mutex
+    return True
 
 
 def thumbnail_accent(url):
@@ -447,6 +475,14 @@ def cleanup_native_integrations(*args):
         except Exception:
             pass
     _MOUSE_DRAG_HOOKS.clear()
+
+    global _INSTANCE_MUTEX
+    if _INSTANCE_MUTEX:
+        try:
+            ctypes.windll.kernel32.CloseHandle(_INSTANCE_MUTEX)
+        except Exception:
+            pass
+        _INSTANCE_MUTEX = None
 
 
 def keep_above_taskbar(window):
@@ -899,6 +935,8 @@ class Api:
 
 
 def main():
+    if not acquire_single_instance():
+        return
     cfg = load_config()
     api = Api()
     kwargs = {}
