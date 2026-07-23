@@ -97,6 +97,32 @@ def _on_ui_thread(window, fn):
         pass
 
 
+def detach_noactivate_handler(window, synchronous=False):
+    """Detach pywebview's unsafe focus=False Activated callback before disposal."""
+    def detach():
+        try:
+            form = window.native
+            if not window.focus:
+                form.Activated -= form.on_activated
+        except Exception:
+            pass
+
+    if not synchronous:
+        _on_ui_thread(window, detach)
+        return
+    try:
+        from System import Action
+        form = window.native
+        if form.IsDisposed or form.Disposing:
+            return
+        if form.InvokeRequired:
+            form.Invoke(Action(detach))
+        else:
+            detach()
+    except Exception:
+        pass
+
+
 def apply_window_state(window, on_top):
     """Set TopMost on the WinForms UI thread."""
     _on_ui_thread(window, lambda: setattr(window.native, "TopMost", bool(on_top)))
@@ -370,6 +396,9 @@ def keep_above_taskbar_safe(window):
 
 def cleanup_native_integrations(*args):
     """Release callbacks before WinForms destroys their native handles."""
+    for window in list(webview.windows):
+        detach_noactivate_handler(window, synchronous=True)
+
     for item in list(_DRAG_TIMERS) + list(_KEEPALIVE_TIMERS):
         timer = item[0] if isinstance(item, tuple) else item
         try:
@@ -870,6 +899,16 @@ def main():
                 pass
         save_config(c)
 
+    def close_sibling_windows(*args):
+        """A native/taskbar close of the main form must close the mini too."""
+        cleanup_native_integrations()
+        for other in list(webview.windows):
+            if other is not window:
+                try:
+                    other.destroy()
+                except Exception:
+                    pass
+
     # taskbar mini widget (weather-widget style pill, drag to move freely)
     slot = taskbar_slot(88)
     if slot:
@@ -895,6 +934,7 @@ def main():
         api._mini = mini
 
         def mini_loaded():
+            detach_noactivate_handler(mini)
             dock_mini_left_of_start(mini)
             round_small_corners(mini)
             keep_above_taskbar_safe(mini)
@@ -917,6 +957,7 @@ def main():
 
     window.events.loaded += on_loaded
     window.events.closing += remember_position
+    window.events.closing += close_sibling_windows
     window.events.closing += cleanup_native_integrations
     window.events.shown += on_shown
     webview.start()
