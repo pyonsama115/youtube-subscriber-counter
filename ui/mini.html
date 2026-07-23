@@ -5,15 +5,42 @@
 <title>YT Mini</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
-  html, body { background: #16161d; overflow: hidden; width: 100vw; height: 100vh; }
+  :root { --channel-rgb: 255, 61, 61; }
+  html { background: transparent; overflow: hidden; width: 100vw; height: 100vh; }
   body {
-    display: flex; align-items: center; justify-content: center;
+    width: 100vw;
+    height: 100vh;
+    background:
+      radial-gradient(ellipse 95% 180% at 0% 0%, rgba(var(--channel-rgb), 0.62) 0%, rgba(var(--channel-rgb), 0.22) 46%, transparent 78%),
+      radial-gradient(ellipse 75% 150% at 110% 120%, rgba(var(--channel-rgb), 0.28) 0%, transparent 72%),
+      linear-gradient(110deg, #181820 0%, #101016 68%, #0b0b10 100%);
+    border-radius: 4px;
+    clip-path: inset(0 round 4px);
+    overflow: hidden;
+    display: grid;
+    place-items: center;
     font-family: "Segoe UI Variable Display", "Segoe UI", "Yu Gothic UI", sans-serif;
     cursor: pointer;
     transition: background .15s;
   }
-  body:hover { background: #23232c; }
-  .wrap { display: flex; align-items: center; gap: 7px; }
+  body:hover { filter: brightness(1.16); }
+  .wrap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 18px;
+    line-height: 18px;
+  }
+  .wrap::before {
+    content: none;
+    width: 18px;
+    height: 18px;
+    flex: 0 0 18px;
+    border-radius: 50%;
+    background: #30303a var(--avatar-url) center/cover no-repeat;
+  }
+  .wrap.avatar-visible::before { content: ""; }
   .yt {
     width: 21px; height: 15px; border-radius: 4.5px;
     background: #f00;
@@ -29,6 +56,9 @@
   }
   #c {
     font-size: 13px; font-weight: 700; color: #fff;
+    display: block;
+    height: 15px;
+    line-height: 15px;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.3px;
   }
@@ -38,6 +68,20 @@
   <div class="wrap"><div class="yt"></div><span id="c">–</span></div>
 <script>
   function setCount(t) { document.getElementById("c").textContent = t; }
+  function setAvatar(url) {
+    const wrap = document.querySelector(".wrap");
+    wrap.style.setProperty("--avatar-url", `url("${url}")`);
+    wrap.classList.add("avatar-visible");
+  }
+  function setAccent(hex) {
+    const match = /^#([0-9a-f]{6})$/i.exec(hex || "");
+    if (!match) return;
+    const value = parseInt(match[1], 16);
+    document.documentElement.style.setProperty(
+      "--channel-rgb",
+      `${value >> 16}, ${(value >> 8) & 255}, ${value & 255}`
+    );
+  }
   // easy_drag moves the window; treat it as a click only if the mouse barely moved
   let downX = 0, downY = 0;
   window.addEventListener("mousedown", e => { downX = e.screenX; downY = e.screenY; });

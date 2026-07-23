@@ -1,5 +1,6 @@
 """YouTube Subscriber Counter - lightweight desktop widget (pywebview / WebView2)."""
 import ctypes
+import io
 import json
 import os
 import subprocess
@@ -10,6 +11,47 @@ import urllib.request
 import webbrowser
 
 import webview
+from PIL import Image
+
+_KEEPALIVE_TIMERS = []
+_FOREGROUND_HOOKS = []
+_WEBVIEW_DRAG_HOOKS = []
+_MOUSE_DRAG_HOOKS = []
+_ACCENT_CACHE = {}
+
+
+def thumbnail_accent(url):
+    """Return a vivid representative RGB color from a channel thumbnail."""
+    if not url:
+        return None
+    if url in _ACCENT_CACHE:
+        return _ACCENT_CACHE[url]
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "yt-sub-widget"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            image = Image.open(io.BytesIO(response.read())).convert("RGB")
+        image.thumbnail((48, 48))
+        colors = image.quantize(colors=8).convert("RGB").getcolors(48 * 48) or []
+
+        def color_score(item):
+            count, (r, g, b) = item
+            spread = max(r, g, b) - min(r, g, b)
+            brightness = (r + g + b) / 3
+            usable = 0.25 if brightness < 28 or brightness > 238 else 1
+            return count * (spread + 18) * usable
+
+        _, (r, g, b) = max(colors, key=color_score)
+        # Lift very dark source colors enough to remain visible on black.
+        peak = max(r, g, b)
+        if peak < 115:
+            scale = 115 / max(1, peak)
+            r, g, b = (min(255, round(v * scale)) for v in (r, g, b))
+        accent = "#%02x%02x%02x" % (r, g, b)
+    except Exception:
+        accent = None
+    _ACCENT_CACHE[url] = accent
+    return accent
+
 
 def round_corners(window):
     """Ask DWM to round + antialias the window corners (Windows 11).
@@ -22,6 +64,17 @@ def round_corners(window):
         hwnd = window.native.Handle.ToInt32()
         pref = ctypes.c_int(2)  # DWMWCP_ROUND
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
+    _on_ui_thread(window, apply)
+
+
+def round_small_corners(window):
+    """Use Windows 11's antialiased small corner style for the mini pill."""
+    def apply():
+        hwnd = ctypes.c_void_p(window.native.Handle.ToInt64())
+        pref = ctypes.c_int(3)  # DWMWCP_ROUNDSMALL
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref)
+        )
     _on_ui_thread(window, apply)
 
 
@@ -46,6 +99,265 @@ def _on_ui_thread(window, fn):
 def apply_window_state(window, on_top):
     """Set TopMost on the WinForms UI thread."""
     _on_ui_thread(window, lambda: setattr(window.native, "TopMost", bool(on_top)))
+
+
+def install_native_drag_regions(window, api):
+    """Install native drag handling for display-only areas in the WebView."""
+    def install():
+        form = window.native
+        user32 = ctypes.windll.user32
+
+        # WebView2 can consume pointer input before its child HWND receives a
+        # normal mouse message. A low-level mouse hook reliably observes the
+        # pointer over the card and moves the form from display-only regions.
+        class _POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        class _MSLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [
+                ("pt", _POINT),
+                ("mouseData", ctypes.c_ulong),
+                ("flags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ctypes.c_void_p),
+            ]
+
+        mouse_proc_type = ctypes.WINFUNCTYPE(
+            ctypes.c_ssize_t,
+            ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p,
+        )
+        call_next_hook = user32.CallNextHookEx
+        call_next_hook.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p
+        ]
+        call_next_hook.restype = ctypes.c_ssize_t
+        set_window_pos = user32.SetWindowPos
+        set_window_pos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        drag = {"active": False, "px": 0, "py": 0, "wx": 0, "wy": 0}
+
+        @mouse_proc_type
+        def mouse_proc(code, message, data):
+            if code >= 0:
+                info = ctypes.cast(data, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                if message == 0x0201:  # WM_LBUTTONDOWN
+                    rect = _RECT()
+                    user32.GetWindowRect(
+                        ctypes.c_void_p(form.Handle.ToInt64()),
+                        ctypes.byref(rect),
+                    )
+                    inside = (
+                        rect.l <= info.pt.x < rect.r
+                        and rect.t <= info.pt.y < rect.b
+                    )
+                    local_x = info.pt.x - rect.l
+                    local_y = info.pt.y - rect.t
+                    normal_drag = (
+                        not api._settings_open and local_y >= 52
+                    )
+                    settings_drag = (
+                        api._settings_open
+                        and local_y < 34
+                        and local_x < (rect.r - rect.l) - 95
+                    )
+                    if inside and (normal_drag or settings_drag):
+                        drag.update(
+                            active=True,
+                            px=info.pt.x,
+                            py=info.pt.y,
+                            wx=rect.l,
+                            wy=rect.t,
+                        )
+                elif message == 0x0200 and drag["active"]:  # WM_MOUSEMOVE
+                    set_window_pos(
+                        ctypes.c_void_p(form.Handle.ToInt64()), None,
+                        drag["wx"] + info.pt.x - drag["px"],
+                        drag["wy"] + info.pt.y - drag["py"],
+                        0, 0, 0x0001 | 0x0004 | 0x0010,
+                    )
+                elif message == 0x0202:  # WM_LBUTTONUP
+                    drag["active"] = False
+            return call_next_hook(None, code, message, data)
+
+        set_windows_hook = user32.SetWindowsHookExW
+        set_windows_hook.argtypes = [
+            ctypes.c_int, mouse_proc_type, ctypes.c_void_p, ctypes.c_uint
+        ]
+        set_windows_hook.restype = ctypes.c_void_p
+        mouse_hook = set_windows_hook(14, mouse_proc, None, 0)  # WH_MOUSE_LL
+        if mouse_hook:
+            _MOUSE_DRAG_HOOKS.append((mouse_hook, mouse_proc, drag))
+
+        # Most clicks land on WebView2's child HWND rather than the form.
+        # Subclass that child so non-interactive card areas start a native
+        # caption drag synchronously, without a JavaScript round trip.
+        wndproc_type = ctypes.WINFUNCTYPE(
+            ctypes.c_ssize_t,
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t,
+        )
+        get_window_long = user32.GetWindowLongPtrW
+        get_window_long.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        get_window_long.restype = ctypes.c_void_p
+        set_window_long = user32.SetWindowLongPtrW
+        set_window_long.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        set_window_long.restype = ctypes.c_void_p
+        call_window_proc = user32.CallWindowProcW
+        call_window_proc.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+            ctypes.c_size_t, ctypes.c_ssize_t,
+        ]
+        call_window_proc.restype = ctypes.c_ssize_t
+
+        child_handles = []
+        enum_proc = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, ctypes.c_void_p, ctypes.c_ssize_t
+        )
+
+        @enum_proc
+        def collect_child(child, param):
+            class_name = ctypes.create_unicode_buffer(128)
+            user32.GetClassNameW(child, class_name, len(class_name))
+            if class_name.value == "Chrome_RenderWidgetHostHWND":
+                child_handles.append(child)
+            return True
+
+        user32.EnumChildWindows(
+            ctypes.c_void_p(form.Handle.ToInt64()), collect_child, 0
+        )
+
+        for child in child_handles:
+            original = get_window_long(child, -4)  # GWLP_WNDPROC
+
+            @wndproc_type
+            def webview_wndproc(handle, message, wparam, lparam, original=original):
+                if message == 0x0201 and api._main_drag_expanded:  # WM_LBUTTONDOWN
+                    y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+                    # The header contains the channel link and control buttons.
+                    # Everything below it is display-only and safe to drag.
+                    if y >= 52:
+                        user32.ReleaseCapture()
+                        user32.SendMessageW(
+                            ctypes.c_void_p(form.Handle.ToInt64()), 0x00A1, 2, 0
+                        )
+                        return 0
+                return call_window_proc(original, handle, message, wparam, lparam)
+
+            set_window_long(
+                child, -4, ctypes.cast(webview_wndproc, ctypes.c_void_p)
+            )
+            _WEBVIEW_DRAG_HOOKS.append(
+                (child, original, webview_wndproc, collect_child)
+            )
+
+    _on_ui_thread(window, install)
+
+
+def keep_above_taskbar(window):
+    """Keep the mini pill above Explorer's equally topmost taskbar.
+
+    Clicking another part of the taskbar can move Explorer ahead of other
+    topmost windows without actually hiding them. Reasserting HWND_TOPMOST
+    while the pill is visible prevents it from appearing to disappear.
+    """
+    def install():
+        from System import EventHandler
+        from System.Windows.Forms import Timer
+
+        form = window.native
+        hwnd_topmost = ctypes.c_void_p(-1)
+        flags = 0x0001 | 0x0002 | 0x0010  # NOSIZE | NOMOVE | NOACTIVATE
+        set_window_pos = ctypes.windll.user32.SetWindowPos
+        set_window_pos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint,
+        ]
+
+        def raise_if_visible(sender=None, event=None):
+            try:
+                set_window_pos(
+                    ctypes.c_void_p(form.Handle.ToInt64()),
+                    hwnd_topmost, 0, 0, 0, 0, flags,
+                )
+            except Exception:
+                pass
+
+        timer = Timer()
+        timer.Interval = 250
+        timer.Tick += EventHandler(raise_if_visible)
+        timer.Start()
+        _KEEPALIVE_TIMERS.append(timer)
+
+        # Explorer can jump ahead of other topmost windows when the taskbar is
+        # clicked. React to that foreground change immediately; the timer above
+        # remains as a fallback for Shell versions that omit the event.
+        winevent_proc = ctypes.WINFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
+            ctypes.c_long, ctypes.c_long, ctypes.c_uint, ctypes.c_uint,
+        )
+
+        @winevent_proc
+        def foreground_changed(hook, event, hwnd, obj_id, child_id, thread, time):
+            raise_if_visible()
+
+        set_hook = ctypes.windll.user32.SetWinEventHook
+        set_hook.argtypes = [
+            ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, winevent_proc,
+            ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,
+        ]
+        set_hook.restype = ctypes.c_void_p
+        hook = set_hook(3, 3, None, foreground_changed, 0, 0, 0)
+        if hook:
+            _FOREGROUND_HOOKS.append((hook, foreground_changed))
+        raise_if_visible()
+
+    _on_ui_thread(window, install)
+
+
+def dock_mini_left_of_start(window):
+    """Place the mini pill left of Start and vertically center it in the taskbar.
+
+    This runs after the native window exists and uses only physical Win32
+    coordinates, avoiding pywebview's DPI conversion for initial x/y values.
+    """
+    def apply():
+        u = ctypes.windll.user32
+        tray = u.FindWindowW("Shell_TrayWnd", None)
+        start = u.FindWindowExW(tray, 0, "Start", None) if tray else 0
+        if not tray or not start:
+            return
+
+        taskbar_rect = _RECT()
+        start_rect = _RECT()
+        mini_rect = _RECT()
+        u.GetWindowRect(tray, ctypes.byref(taskbar_rect))
+        u.GetWindowRect(start, ctypes.byref(start_rect))
+        u.GetWindowRect(
+            ctypes.c_void_p(window.native.Handle.ToInt64()),
+            ctypes.byref(mini_rect),
+        )
+
+        width = mini_rect.r - mini_rect.l
+        height = mini_rect.b - mini_rect.t
+        x = start_rect.l - width - 8
+        y = taskbar_rect.t + ((taskbar_rect.b - taskbar_rect.t) - height) // 2
+
+        set_window_pos = u.SetWindowPos
+        set_window_pos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        set_window_pos(
+            ctypes.c_void_p(window.native.Handle.ToInt64()),
+            ctypes.c_void_p(-1), x, y, 0, 0,
+            0x0001 | 0x0010,  # NOSIZE | NOACTIVATE
+        )
+
+    _on_ui_thread(window, apply)
 
 
 def hide_taskbar_button(window):
@@ -100,15 +412,24 @@ def taskbar_slot(mini_w_logical):
         except AttributeError:
             dpi = 96
         scale = (dpi or 96) / 96
-        right_edge = r.r
-        notify = u.FindWindowExW(tray, 0, "TrayNotifyWnd", None)
-        if notify:
-            nr = _RECT()
-            u.GetWindowRect(notify, ctypes.byref(nr))
-            if nr.l > r.l:
-                right_edge = nr.l
+        # Windows 11 exposes the Start button as a direct "Start" child.
+        # Prefer its left edge, then fall back to the notification area.
+        anchor = r.r
+        start = u.FindWindowExW(tray, 0, "Start", None)
+        if start:
+            sr = _RECT()
+            u.GetWindowRect(start, ctypes.byref(sr))
+            if r.l < sr.l < r.r:
+                anchor = sr.l
+        else:
+            notify = u.FindWindowExW(tray, 0, "TrayNotifyWnd", None)
+            if notify:
+                nr = _RECT()
+                u.GetWindowRect(notify, ctypes.byref(nr))
+                if nr.l > r.l:
+                    anchor = nr.l
         h_logical = max(28, int(tb_h / scale) - 12)
-        x_logical = int(right_edge / scale) - mini_w_logical - 8
+        x_logical = int(anchor / scale) - mini_w_logical - 8
         y_logical = int((r.t + tb_h / 2) / scale - h_logical / 2)
         return x_logical, y_logical, mini_w_logical, h_logical
     except Exception:
@@ -159,6 +480,8 @@ class Api:
         self._channel_url = None
         self._window = None
         self._mini = None
+        self._main_drag_expanded = True
+        self._settings_open = False
 
     def toggle_main(self):
         if not self._window:
@@ -173,6 +496,19 @@ class Api:
                         form.Hide()
                     else:
                         form.Show()
+                        from System.Windows.Forms import FormWindowState
+                        form.WindowState = FormWindowState.Normal
+                        hwnd = ctypes.c_void_p(form.Handle.ToInt64())
+                        flags = 0x0001 | 0x0002 | 0x0040  # NOSIZE|NOMOVE|SHOWWINDOW
+                        ctypes.windll.user32.SetWindowPos(
+                            hwnd, ctypes.c_void_p(-1), 0, 0, 0, 0, flags
+                        )
+                        ctypes.windll.user32.SetWindowPos(
+                            hwnd, ctypes.c_void_p(-2), 0, 0, 0, 0, flags
+                        )
+                        form.BringToFront()
+                        form.Activate()
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
                 except Exception:
                     pass
 
@@ -191,6 +527,10 @@ class Api:
             else:
                 url = "https://www.youtube.com/@" + ch.lstrip("@")
         webbrowser.open(url)
+
+    def set_drag_expanded(self, expanded):
+        self._main_drag_expanded = bool(expanded)
+        self._settings_open = not bool(expanded)
 
     def set_on_top(self, on_top):
         on_top = bool(on_top)
@@ -319,10 +659,23 @@ class Api:
         )
         thumbs = snip.get("thumbnails", {})
         thumb = (thumbs.get("medium") or thumbs.get("default") or {}).get("url", "")
+        accent = thumbnail_accent(thumb)
+        if self._mini and thumb:
+            try:
+                self._mini.evaluate_js(
+                    "setAvatar(%s)" % json.dumps(thumb, ensure_ascii=False)
+                )
+                if accent:
+                    self._mini.evaluate_js(
+                        "setAccent(%s)" % json.dumps(accent)
+                    )
+            except Exception:
+                pass
         return {
             "title": snip.get("title", ""),
             "handle": snip.get("customUrl", ""),
             "thumbnail": thumb,
+            "accent": accent,
             "subscribers": int(stats.get("subscriberCount", 0)),
             "hiddenSubs": stats.get("hiddenSubscriberCount", False),
             "views": int(stats.get("viewCount", 0)),
@@ -345,7 +698,7 @@ def main():
         width=320,
         height=165,
         frameless=True,
-        easy_drag=True,
+        easy_drag=False,
         on_top=cfg.get("alwaysOnTop", True),
         background_color="#101016",
         resizable=False,
@@ -368,8 +721,6 @@ def main():
     slot = taskbar_slot(88)
     if slot:
         mx, my, mw, mh = slot
-        if isinstance(cfg.get("miniX"), int) and isinstance(cfg.get("miniY"), int):
-            mx, my = cfg["miniX"], cfg["miniY"]
         mini = webview.create_window(
             "YT Sub Mini",
             MINI_UI_PATH,
@@ -380,6 +731,8 @@ def main():
             y=my,
             min_size=(mw, mh),
             frameless=True,
+            shadow=False,
+            transparent=True,
             on_top=True,
             resizable=False,
             focus=False,
@@ -389,7 +742,9 @@ def main():
         api._mini = mini
 
         def mini_loaded():
-            round_corners(mini)
+            dock_mini_left_of_start(mini)
+            round_small_corners(mini)
+            keep_above_taskbar(mini)
             if load_config().get("alwaysOnTop", True):
                 try:
                     mini.hide()
@@ -404,6 +759,7 @@ def main():
 
     def on_loaded():
         hide_taskbar_button(window)
+        install_native_drag_regions(window, api)
         round_corners(window)  # re-apply: ShowInTaskbar recreated the handle
 
     window.events.loaded += on_loaded
