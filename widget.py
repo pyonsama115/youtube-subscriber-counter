@@ -19,6 +19,7 @@ _WEBVIEW_DRAG_HOOKS = []
 _MOUSE_DRAG_HOOKS = []
 _DRAG_TIMERS = []
 _CLOSE_HANDLERS = []
+_TRAY_RESOURCES = []
 _ACCENT_CACHE = {}
 _INSTANCE_MUTEX = None
 
@@ -172,6 +173,48 @@ def install_unified_close_handler(window, api):
         handler = FormClosingEventHandler(on_form_closing)
         form.FormClosing += handler
         _CLOSE_HANDLERS.append((form, handler))
+
+    _on_ui_thread(window, install)
+
+
+def install_notification_icon(window, api):
+    """Add a notification-area icon with Show and Exit actions."""
+    def install():
+        from System import EventHandler
+        from System.Drawing import Icon
+        from System.Windows.Forms import (
+            ContextMenuStrip,
+            NotifyIcon,
+            ToolStripMenuItem,
+        )
+
+        icon = Icon.ExtractAssociatedIcon(sys.executable)
+        menu = ContextMenuStrip()
+        show_item = ToolStripMenuItem("表示")
+        exit_item = ToolStripMenuItem("終了")
+        menu.Items.Add(show_item)
+        menu.Items.Add(exit_item)
+
+        notify = NotifyIcon()
+        notify.Icon = icon
+        notify.Text = "YouTube Subscriber Counter"
+        notify.ContextMenuStrip = menu
+
+        def show_or_hide(sender=None, event=None):
+            api.toggle_main()
+
+        def exit_app(sender=None, event=None):
+            api.close_app()
+
+        show_handler = EventHandler(show_or_hide)
+        exit_handler = EventHandler(exit_app)
+        show_item.Click += show_handler
+        exit_item.Click += exit_handler
+        notify.DoubleClick += show_handler
+        notify.Visible = True
+        _TRAY_RESOURCES.append(
+            (notify, menu, icon, show_item, exit_item, show_handler, exit_handler)
+        )
 
     _on_ui_thread(window, install)
 
@@ -451,6 +494,16 @@ def cleanup_native_integrations(*args):
     """Release callbacks before WinForms destroys their native handles."""
     for window in list(webview.windows):
         detach_noactivate_handler(window, synchronous=True)
+
+    for notify, menu, icon, *_ in list(_TRAY_RESOURCES):
+        try:
+            notify.Visible = False
+            notify.Dispose()
+            menu.Dispose()
+            icon.Dispose()
+        except Exception:
+            pass
+    _TRAY_RESOURCES.clear()
 
     for item in list(_DRAG_TIMERS) + list(_KEEPALIVE_TIMERS):
         timer = item[0] if isinstance(item, tuple) else item
@@ -1025,6 +1078,7 @@ def main():
     def on_loaded():
         hide_taskbar_button(window)
         install_unified_close_handler(window, api)
+        install_notification_icon(window, api)
         install_safe_drag_regions(window, api)
         round_corners(window)  # re-apply: ShowInTaskbar recreated the handle
 
