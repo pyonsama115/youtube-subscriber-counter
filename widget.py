@@ -18,6 +18,7 @@ _FOREGROUND_HOOKS = []
 _WEBVIEW_DRAG_HOOKS = []
 _MOUSE_DRAG_HOOKS = []
 _DRAG_TIMERS = []
+_CLOSE_HANDLERS = []
 _ACCENT_CACHE = {}
 
 
@@ -121,6 +122,30 @@ def detach_noactivate_handler(window, synchronous=False):
             detach()
     except Exception:
         pass
+
+
+def install_unified_close_handler(window, api):
+    """Route native/taskbar closes through Api.close_app exactly once."""
+    def install():
+        from System import Action
+        from System.Windows.Forms import FormClosingEventHandler
+
+        form = window.native
+
+        def on_form_closing(sender, args):
+            if api._closing_all:
+                return
+            args.Cancel = True
+            try:
+                form.BeginInvoke(Action(api.close_app))
+            except Exception:
+                pass
+
+        handler = FormClosingEventHandler(on_form_closing)
+        form.FormClosing += handler
+        _CLOSE_HANDLERS.append((form, handler))
+
+    _on_ui_thread(window, install)
 
 
 def apply_window_state(window, on_top):
@@ -663,6 +688,7 @@ class Api:
         self._mini = None
         self._main_drag_expanded = True
         self._settings_open = False
+        self._closing_all = False
 
     def toggle_main(self):
         if not self._window:
@@ -782,8 +808,14 @@ class Api:
         return cfg
 
     def close_app(self):
+        if self._closing_all:
+            return
+        self._closing_all = True
         cleanup_native_integrations()
-        for w in list(webview.windows):
+        windows_to_close = list(webview.windows)
+        # Destroy auxiliary windows first and the master form last.
+        windows_to_close.sort(key=lambda w: w is self._window)
+        for w in windows_to_close:
             try:
                 w.destroy()
             except Exception:
@@ -952,12 +984,12 @@ def main():
 
     def on_loaded():
         hide_taskbar_button(window)
+        install_unified_close_handler(window, api)
         install_safe_drag_regions(window, api)
         round_corners(window)  # re-apply: ShowInTaskbar recreated the handle
 
     window.events.loaded += on_loaded
     window.events.closing += remember_position
-    window.events.closing += close_sibling_windows
     window.events.closing += cleanup_native_integrations
     window.events.shown += on_shown
     webview.start()
