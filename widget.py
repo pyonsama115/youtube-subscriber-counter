@@ -17,6 +17,7 @@ _KEEPALIVE_TIMERS = []
 _FOREGROUND_HOOKS = []
 _WEBVIEW_DRAG_HOOKS = []
 _MOUSE_DRAG_HOOKS = []
+_DRAG_TIMERS = []
 _ACCENT_CACHE = {}
 
 
@@ -253,6 +254,145 @@ def install_native_drag_regions(window, api):
             )
 
     _on_ui_thread(window, install)
+
+
+def install_safe_drag_regions(window, api):
+    """Poll mouse state on the UI thread; never install a system-wide hook."""
+    def install():
+        from System import EventHandler
+        from System.Windows.Forms import Control, Cursor, MouseButtons, Timer
+
+        form = window.native
+        user32 = ctypes.windll.user32
+        set_window_pos = user32.SetWindowPos
+        set_window_pos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        drag = {"active": False, "px": 0, "py": 0, "wx": 0, "wy": 0}
+
+        def tick(sender, event):
+            try:
+                if form.IsDisposed or form.Disposing:
+                    sender.Stop()
+                    return
+                left_down = (
+                    Control.MouseButtons & MouseButtons.Left
+                ) == MouseButtons.Left
+                point = Cursor.Position
+                rect = _RECT()
+                user32.GetWindowRect(
+                    ctypes.c_void_p(form.Handle.ToInt64()), ctypes.byref(rect)
+                )
+
+                if left_down and not drag["active"]:
+                    inside = (
+                        rect.l <= point.X < rect.r
+                        and rect.t <= point.Y < rect.b
+                    )
+                    local_x = point.X - rect.l
+                    local_y = point.Y - rect.t
+                    normal_drag = not api._settings_open and local_y >= 52
+                    settings_drag = (
+                        api._settings_open
+                        and local_y < 34
+                        and local_x < (rect.r - rect.l) - 95
+                    )
+                    if inside and (normal_drag or settings_drag):
+                        drag.update(
+                            active=True,
+                            px=point.X,
+                            py=point.Y,
+                            wx=rect.l,
+                            wy=rect.t,
+                        )
+                elif left_down and drag["active"]:
+                    set_window_pos(
+                        ctypes.c_void_p(form.Handle.ToInt64()), None,
+                        drag["wx"] + point.X - drag["px"],
+                        drag["wy"] + point.Y - drag["py"],
+                        0, 0, 0x0001 | 0x0004 | 0x0010,
+                    )
+                elif not left_down:
+                    drag["active"] = False
+            except Exception:
+                drag["active"] = False
+
+        timer = Timer()
+        timer.Interval = 15
+        timer.Tick += EventHandler(tick)
+        timer.Start()
+        _DRAG_TIMERS.append((timer, tick))
+
+    _on_ui_thread(window, install)
+
+
+def keep_above_taskbar_safe(window):
+    """Keep the mini above Explorer using only a process-local UI timer."""
+    def install():
+        from System import EventHandler
+        from System.Windows.Forms import Timer
+
+        form = window.native
+        set_window_pos = ctypes.windll.user32.SetWindowPos
+        set_window_pos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint,
+        ]
+
+        def tick(sender, event):
+            try:
+                if form.IsDisposed or form.Disposing:
+                    sender.Stop()
+                    return
+                if form.Visible:
+                    set_window_pos(
+                        ctypes.c_void_p(form.Handle.ToInt64()),
+                        ctypes.c_void_p(-1), 0, 0, 0, 0,
+                        0x0001 | 0x0002 | 0x0010,
+                    )
+            except Exception:
+                try:
+                    sender.Stop()
+                except Exception:
+                    pass
+
+        timer = Timer()
+        timer.Interval = 30
+        timer.Tick += EventHandler(tick)
+        timer.Start()
+        _KEEPALIVE_TIMERS.append((timer, tick))
+
+    _on_ui_thread(window, install)
+
+
+def cleanup_native_integrations(*args):
+    """Release callbacks before WinForms destroys their native handles."""
+    for item in list(_DRAG_TIMERS) + list(_KEEPALIVE_TIMERS):
+        timer = item[0] if isinstance(item, tuple) else item
+        try:
+            timer.Stop()
+            timer.Dispose()
+        except Exception:
+            pass
+    _DRAG_TIMERS.clear()
+    _KEEPALIVE_TIMERS.clear()
+
+    user32 = ctypes.windll.user32
+    for hook, callback in list(_FOREGROUND_HOOKS):
+        try:
+            user32.UnhookWinEvent(hook)
+        except Exception:
+            pass
+    _FOREGROUND_HOOKS.clear()
+    for hook, callback, drag in list(_MOUSE_DRAG_HOOKS):
+        try:
+            user32.UnhookWindowsHookEx(hook)
+        except Exception:
+            pass
+    _MOUSE_DRAG_HOOKS.clear()
 
 
 def keep_above_taskbar(window):
@@ -613,6 +753,7 @@ class Api:
         return cfg
 
     def close_app(self):
+        cleanup_native_integrations()
         for w in list(webview.windows):
             try:
                 w.destroy()
@@ -756,7 +897,7 @@ def main():
         def mini_loaded():
             dock_mini_left_of_start(mini)
             round_small_corners(mini)
-            keep_above_taskbar(mini)
+            keep_above_taskbar_safe(mini)
             if load_config().get("alwaysOnTop", True):
                 try:
                     mini.hide()
@@ -771,11 +912,12 @@ def main():
 
     def on_loaded():
         hide_taskbar_button(window)
-        install_native_drag_regions(window, api)
+        install_safe_drag_regions(window, api)
         round_corners(window)  # re-apply: ShowInTaskbar recreated the handle
 
     window.events.loaded += on_loaded
     window.events.closing += remember_position
+    window.events.closing += cleanup_native_integrations
     window.events.shown += on_shown
     webview.start()
 
